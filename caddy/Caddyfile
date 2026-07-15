@@ -1,0 +1,31 @@
+# Caddyfile — Dive Realities Observability Stack
+#
+# Caddy substitui o Nginx no host: emite certificados Let's Encrypt
+# automaticamente e faz proxy reverso para o Grafana.
+#
+# Caddy renova os certificados sozinho (sem certbot, sem cron, sem hooks).
+# O desafio ACME TLS-ALPN é resolvido internamente na porta 443.
+#
+# Para alterar o domínio: edite GRAFANA_DOMAIN no .env e rode: make up
+
+{$GRAFANA_DOMAIN} {
+    # Encaminha todas as requisições HTTPS para o Grafana interno
+    # O Caddy negocia TLS com o Let's Encrypt antes de servir qualquer tráfego
+    reverse_proxy grafana:3000
+
+    # Cabeçalhos de segurança — reforçam a política do Grafana
+    header {
+        # Evita que navegadores tentem adivinhar o content-type (XSS mitigation)
+        X-Content-Type-Options nosniff
+        # Permite embedding via iframe apenas no mesmo domínio (Grafana usa iframes internamente)
+        X-Frame-Options SAMEORIGIN
+        # Força HTTPS em todas as requisições futuras (1 ano)
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    }
+
+    # Log de acesso estruturado — enviado para stdout e coletado pelo Promtail
+    log {
+        output stdout
+        format json
+    }
+}

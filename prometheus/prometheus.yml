@@ -1,0 +1,103 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: "dive-realities"
+    environment: "${ENVIRONMENT}"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+rule_files:
+  - "/etc/prometheus/alert.rules.yml"
+
+scrape_configs:
+
+  # self-monitoring
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          service: "observability"
+
+  - job_name: "alertmanager"
+    static_configs:
+      - targets: ["alertmanager:9093"]
+        labels:
+          service: "observability"
+
+  # observability VPS
+  - job_name: "node-observability"
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels:
+          environment: "observability"
+          service: "host"
+          server: "observability-vps"
+
+  - job_name: "cadvisor-observability"
+    static_configs:
+      - targets: ["cadvisor:8080"]
+        labels:
+          environment: "observability"
+          service: "containers"
+          server: "observability-vps"
+
+  # dev environment — Tailscale private IP (traffic encrypted, not public internet)
+  - job_name: "node-dev"
+    static_configs:
+      - targets: ["${DEV_TAILSCALE_IP}:9100"]
+        labels:
+          environment: "dev"
+          service: "host"
+          server: "dev-vps"
+
+  - job_name: "pm2-dev"
+    static_configs:
+      - targets: ["${DEV_TAILSCALE_IP}:9209"]
+        labels:
+          environment: "dev"
+          service: "pm2"
+          server: "dev-vps"
+
+  - job_name: "cadvisor-dev"
+    static_configs:
+      - targets: ["${DEV_TAILSCALE_IP}:8080"]
+        labels:
+          environment: "dev"
+          service: "containers"
+          server: "dev-vps"
+
+  # prod environment — Tailscale private IP
+  - job_name: "node-prod"
+    static_configs:
+      - targets: ["${PROD_TAILSCALE_IP}:9100"]
+        labels:
+          environment: "prod"
+          service: "host"
+          server: "prod-vps"
+
+  - job_name: "pm2-prod"
+    static_configs:
+      - targets: ["${PROD_TAILSCALE_IP}:9209"]
+        labels:
+          environment: "prod"
+          service: "pm2"
+          server: "prod-vps"
+
+  - job_name: "cadvisor-prod"
+    static_configs:
+      - targets: ["${PROD_TAILSCALE_IP}:8080"]
+        labels:
+          environment: "prod"
+          service: "containers"
+          server: "prod-vps"
+
+  # future: uncomment when available
+  # - job_name: "uptime-kuma"
+  #   metrics_path: /metrics
+  #   static_configs:
+  #     - targets: ["uptime-kuma:3001"]

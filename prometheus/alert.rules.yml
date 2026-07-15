@@ -1,0 +1,138 @@
+groups:
+  - name: dive-infra
+    rules:
+
+      # `environment` label is inherited from Prometheus target labels and used
+      # by Alertmanager to route the alert to the correct Discord channel
+      - alert: ServidorIndisponivel
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: dive-infra
+        annotations:
+          summary: "Servidor {{ $labels.server }} ({{ $labels.environment }}) indisponível"
+          description: "O target {{ $labels.instance }} do job {{ $labels.job }} está fora do ar há mais de 1 minuto."
+          runbook_url: "https://github.com/dive-realities/observability/wiki/runbook-servidor-indisponivel"
+
+      # 80% threshold chosen to leave headroom before OOM kills; sustained 5m avoids false positives from spikes
+      - alert: CPUAltaHost
+        expr: 100 - (avg by (instance, server, environment) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+          team: dive-infra
+        annotations:
+          summary: "CPU acima de 80% em {{ $labels.server }} ({{ $labels.environment }})"
+          description: "CPU do host {{ $labels.instance }} está em {{ $value | printf \"%.1f\" }}% nos últimos 5 minutos."
+          runbook_url: "https://github.com/dive-realities/observability/wiki/runbook-cpu-alta"
+
+      # MemAvailable is a more accurate measure than MemFree as it includes reclaimable cache
+      - alert: MemoriaAltaHost
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+          team: dive-infra
+        annotations:
+          summary: "Memória acima de 90% em {{ $labels.server }} ({{ $labels.environment }})"
+          description: "Memória disponível do host {{ $labels.instance }} está abaixo de 10% (uso atual: {{ $value | printf \"%.1f\" }}%)."
+          runbook_url: "https://github.com/dive-realities/observability/wiki/runbook-memoria-alta"
+
+      # 15% threshold gives time to act before the filesystem fills completely;
+      # excludes tmpfs and overlay (Docker layers) which are ephemeral by design
+      - alert: DiscoQuaseCheio
+        expr: (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}) * 100 < 15
+        for: 5m
+        labels:
+          severity: critical
+          team: dive-infra
+        annotations:
+          summary: "Disco com menos de 15% livre em {{ $labels.server }} ({{ $labels.environment }})"
+          description: "Partição {{ $labels.mountpoint }} em {{ $labels.instance }} está com {{ $value | printf \"%.1f\" }}% de espaço livre."
+          runbook_url: "https://github.com/dive-realities/observability/wiki/runbook-disco-cheio"
+
+      # for: 0m — fire immediately on first evaluation; a crash loop is always actionable
+      # and adding a stabilization window would delay detection of genuine restart storms
+      - alert: PM2RestartLoop
+        expr: increase(pm2_process_restarts_total[10m]) > 5
+        for: 0m
+        labels:
+          severity: critical
+          team: dive-infra
+        annotations:
+          summary: "Processo PM2 {{ $labels.process_name }} em crash loop ({{ $labels.environment }})"
+          description: "O processo {{ $labels.process_name }} teve {{ $value | printf \"%.0f\" }} restarts nos últimos 10 minutos."
+          runbook_url: "https://github.com/dive-realities/observability/wiki/runbook-pm2-crash-loop"
+
+      # 1.5 GB threshold based on typical Node.js heap growth patterns;
+      # a warning before OOM allows graceful restart rather than a crash
+      - alert: PM2MemoriaAlta
+        expr: pm2_process_memory_bytes > 1.5e9
+        for: 5m
+        labels:
+          severity: warning
+          team: dive-infra
+        annotations:
+          summary: "Processo PM2 {{ $labels.process_name }} com memória alta ({{ $labels.environment }})"
+          description: "O processo {{ $labels.process_name }} está usando {{ $value | humanize }}B de RAM (limite: 1.5GB)."
+          runbook_url: "https://github.com/dive-realities/observability/wiki/runbook-pm2-memoria-alta"
+
+  # ── Alertas de container (cAdvisor) ────────────────────────────────────────
+  # These rules fire based on metrics scraped from cAdvisor running on each VPS.
+  # They complement the host-level alerts above by providing per-container visibility.
+  - name: dive-containers
+    rules:
+
+      # OOM kills are silent and immediate; fire as soon as the event counter increments.
+      # container_oom_events_total is cumulative — any increase means a container was OOM-killed.
+      - alert: ContainerOOMKilled
+        expr: increase(container_oom_events_total{name!=""}[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          team: dive-infra
+        annotations:
+          summary: "Container {{ $labels.name }} ({{ $labels.environment }}) morreu por OOM"
+          description: "O container {{ $labels.name }} em {{ $labels.instance }} foi encerrado pelo OOM killer. Considere aumentar o memory limit ou investigar memory leaks."
+          runbook_url: "https://github.com/dive-realities/observability/wiki/runbook-container-oom"
+
+      # CPU throttling > 80% of the configured limit sustained for 5m indicates the container
+      # is consistently starved; raising the limit or optimizing the app is required.
+      - alert: ContainerCPUAlta
+        expr: |
+          (
+            sum by (name, instance, environment) (
+              rate(container_cpu_usage_seconds_total{name!=""}[5m])
+            )
+            /
+            sum by (name, instance, environment) (
+              container_spec_cpu_quota{name!=""} / container_spec_cpu_period{name!=""}
+            )
+          ) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+          team: dive-infra
+        annotations:
+          summary: "Container {{ $labels.name }} usando mais de 80% do CPU limit ({{ $labels.environment }})"
+          description: "Container {{ $labels.name }} em {{ $labels.instance }} está em {{ $value | printf \"%.1f\" }}% do CPU limit por mais de 5 minutos."
+          runbook_url: "https://github.com/dive-realities/observability/wiki/runbook-container-cpu"
+
+      # Memory usage > 90% of the configured limit is a pre-OOM warning.
+      # Fires before ContainerOOMKilled to allow proactive action.
+      - alert: ContainerMemoriaAlta
+        expr: |
+          (
+            container_memory_working_set_bytes{name!=""}
+            /
+            container_spec_memory_limit_bytes{name!="", container_spec_memory_limit_bytes > 0}
+          ) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+          team: dive-infra
+        annotations:
+          summary: "Container {{ $labels.name }} usando mais de 90% do memory limit ({{ $labels.environment }})"
+          description: "Container {{ $labels.name }} em {{ $labels.instance }} está em {{ $value | printf \"%.1f\" }}% do memory limit. Risco de OOM kill."
+          runbook_url: "https://github.com/dive-realities/observability/wiki/runbook-container-memoria"

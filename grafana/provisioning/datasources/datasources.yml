@@ -1,0 +1,17 @@
+apiVersion: 1
+
+datasources:
+  # Prometheus — fonte de métricas (CPU, RAM, PM2, containers)
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false   # imutável via provisioning — alterações manuais são sobrescritas no restart
+
+  # Loki — fonte de logs (containers, PM2, syslog)
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false

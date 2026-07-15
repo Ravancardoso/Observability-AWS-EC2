@@ -1,0 +1,22 @@
+# ── Secrets e configs renderizadas (NUNCA comitar) ──────────────────────────
+.env
+
+# ── Node.js (pm2-exporter) ───────────────────────────────────────────────────
+pm2-exporter/node_modules/
+pm2-exporter/package-lock.json
+pm2-exporter/yarn.lock
+
+# ── Editors ──────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Logs locais (testes manuais) ─────────────────────────────────────────────
+*.log

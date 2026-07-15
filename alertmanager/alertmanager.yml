@@ -1,0 +1,64 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: "default"
+  group_by: ["alertname", "environment", "server"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 1h
+
+  routes:
+    # prod critical — repeat 1h, on-call SLA requires visibility within 1h
+    - matchers:
+        - environment = "prod"
+        - severity = "critical"
+      receiver: "prod-critical-discord"
+      repeat_interval: 1h
+      continue: false
+
+    # prod warning — lower urgency; 2h repeat avoids channel fatigue
+    - matchers:
+        - environment = "prod"
+        - severity = "warning"
+      receiver: "prod-warning-discord"
+      repeat_interval: 2h
+      continue: false
+
+    # dev: any severity; 24h repeat to avoid noisy channels during active development
+    - matchers:
+        - environment = "dev"
+      receiver: "dev-discord"
+      repeat_interval: 24h
+      continue: false
+
+receivers:
+  # fallback: alerts without an environment label go to prod-critical to ensure nothing is silently dropped
+  - name: "default"
+    webhook_configs:
+      - url: "http://alertmanager-discord-prod-critical:9094"
+        send_resolved: true
+
+  - name: "prod-critical-discord"
+    webhook_configs:
+      - url: "http://alertmanager-discord-prod-critical:9094"
+        send_resolved: true
+
+  - name: "prod-warning-discord"
+    webhook_configs:
+      - url: "http://alertmanager-discord-prod-warning:9094"
+        send_resolved: true
+
+  - name: "dev-discord"
+    webhook_configs:
+      - url: "http://alertmanager-discord-dev:9094"
+        send_resolved: true
+
+inhibit_rules:
+  # when a host is already firing ServidorIndisponivel, suppress downstream warning alerts
+  # from the same host to prevent alert storms masking the root cause
+  - source_matchers:
+      - alertname = "ServidorIndisponivel"
+    target_matchers:
+      - severity = "warning"
+    equal: ["server", "environment"]

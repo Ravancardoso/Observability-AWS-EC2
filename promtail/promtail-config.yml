@@ -1,0 +1,130 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /var/lib/promtail/positions.yaml   # volume persistente — montado em dive-promtail
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+    # backoff_config: os defaults (min 500ms, max 5min, 10 retries) são suficientes para
+    # o volume esperado nesta stack. Ajustar apenas se o Loki enfrentar indisponibilidade frequente.
+
+scrape_configs:
+
+  # ── Logs de todos os containers Docker (formato json-file do daemon) ──────
+  - job_name: docker-containers
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: docker
+          environment: ${ENVIRONMENT}
+          __path__: /var/lib/docker/containers/*/*.log
+    pipeline_stages:
+
+      # 1. Parse do envelope JSON gerado pelo docker json-file log driver
+      - json:
+          expressions:
+            output: log
+            stream: stream
+            time: time
+
+      # 2. Propagar o stream (stdout/stderr) como label — útil para filtrar erros no Grafana
+      - labels:
+          stream:
+
+      # 3. Usar o timestamp do próprio container, não o de chegada no Promtail
+      - timestamp:
+          source: time
+          format: RFC3339Nano
+
+      # 4. Promover o conteúdo da linha de log para o campo principal
+      - output:
+          source: output
+
+      # 5. DROP — health checks internos do Docker Compose (dezenas por minuto, zero valor)
+      - drop:
+          expression: '(GET /(health|ready|metrics|healthz) HTTP)|(wget.*health)|(curl.*health)'
+          drop_counter_reason: "health_check_noise"
+
+      # 6. DROP — logs de nível DEBUG em produção
+      - drop:
+          expression: '\b(DEBUG|DEBU|debug)\b'
+          drop_counter_reason: "debug_log"
+
+      # 7. DROP — logs de rotina do Grafana que não são acionáveis
+      - drop:
+          expression: '(t=.*level=info.*msg="Request Completed")|(Provisioning of dashboards)|(Updated dashboard)'
+          drop_counter_reason: "grafana_routine_info"
+
+      # 8. DROP — linhas em branco
+      - drop:
+          expression: '^\s*$'
+          drop_counter_reason: "empty_line"
+
+  # ── Logs do PM2 — stdout ─────────────────────────────────────────────────
+  - job_name: pm2-out
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: pm2
+          stream: stdout
+          environment: ${ENVIRONMENT}
+          __path__: /pm2-logs/*-out-*.log
+    pipeline_stages:
+      - match:
+          selector: '{job="pm2"}'
+          stages:
+            - regex:
+                source: filename
+                expression: '/pm2-logs/(?P<process_name>[^/]+)-out-\d+\.log$'
+            - labels:
+                process_name:
+      - drop:
+          expression: '\b(DEBUG|debug|verbose|VERBOSE)\b'
+          drop_counter_reason: "pm2_debug_log"
+      - drop:
+          expression: '(GET /(health|ready|ping|metrics))'
+          drop_counter_reason: "pm2_health_check"
+      - drop:
+          expression: '^\s*$'
+          drop_counter_reason: "empty_line"
+
+  # ── Logs do PM2 — stderr (erros e stack traces) ──────────────────────────
+  - job_name: pm2-error
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: pm2
+          stream: stderr
+          environment: ${ENVIRONMENT}
+          __path__: /pm2-logs/*-error-*.log
+    pipeline_stages:
+      - match:
+          selector: '{job="pm2"}'
+          stages:
+            - regex:
+                source: filename
+                expression: '/pm2-logs/(?P<process_name>[^/]+)-error-\d+\.log$'
+            - labels:
+                process_name:
+      # logs de erro (stderr) são sempre relevantes — apenas linhas vazias descartadas
+      - drop:
+          expression: '^\s*$'
+          drop_counter_reason: "empty_line"
+
+  # ── Logs do sistema (auth, SSH, kernel) ───────────────────────────────────
+  - job_name: syslog
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: syslog
+          environment: ${ENVIRONMENT}
+          __path__: /var/log/syslog
+    pipeline_stages:
+      - drop:
+          expression: 'CRON\[|crontab\['
+          drop_counter_reason: "cron_noise"
+      - drop:
+          expression: 'audit.*type=PATH.*nametype=READ'
+          drop_counter_reason: "audit_read_noise"
